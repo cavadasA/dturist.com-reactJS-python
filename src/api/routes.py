@@ -10,6 +10,12 @@ from flask_jwt_extended import get_jwt_identity
 import random
 from werkzeug.security import generate_password_hash, check_password_hash
 
+# library for Simple Mail Transfer Protocol# library for Simple Mail Transfer Protocol
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import smtplib
+import email.message
+
 api = Blueprint('api', __name__)
 
 @api.route('/signup', methods=['POST'])
@@ -63,42 +69,88 @@ def upload_images():
 
     return jsonify("has subido las fotos"), 200
     
-@api.route("/forgot", methods=['POST'])
-def forgot():
-    request_json = request.get_json()
- 
-    email=request_json ["email"]
+@api.route('/request_reset_pass', methods =['POST'])
+def request_reset_pass():
+    body = request.get_json()
+    user_email = body["email"]
+    frontend_URL = os.environ.get('FRONTEND_URL')
 
-    if email is None:
-        raise APIException("Correo Electronico Requerido")
+    user = User.find_by_email(user_email)
 
-    n = random.randint(100000000, 122939393939)
-    print(n)
+    if user:
+        try:
+            token = jwt.encode({
+            'id': user.id,
+            'exp' : datetime.utcnow() + timedelta(minutes = 30)
+            }, app.config['SECRET_KEY'])
 
-    user = User.get_with_email(email)
-    user.token = token
+            short_token = token.decode("utf-8").split(".")[0]
 
-    db.session.commit()
+            result_upadte = user.update_user(token=short_token)
 
-    forgot_password_email = ForgotPasswordEmail(email, token)
-    forgot_password_email.send()
+            url_reset_email = frontend_URL + "/reset_pass?token=" + short_token
 
-    return jsonify({}), 200
+            url_reset_app = "/reset_pass?token=" + short_token
 
-@api.route('/reset-password' , methods=['POST'])
-def forgot_password ():
+        except:
+            raise APIException("Algo esta mal. Su contraseña no ha podido ser cambiada.", 401)
 
-    request_json = request.get_json()
+        message_email=f"Hola {user.email}! como nos pidió, aca esta el link para reestablecer su contraseña: {url_reset_email}"
+        email = send_email(receiver=user.email, message=message_email)
 
-    email = request_json["email"]
-    token = request_json["token"]
+        return jsonify({'token' : user.token, 'url_reset':url_reset_app}), 201
 
-    user=User.get_for_forgot(email, token)
-    user.password = password 
-    user.token = None
-    db.session.commit()
+    else:
+        raise APIException("Este usuario no existe", 401)
 
-    return jsonify({}), 200
+
+@api.route('/reset_pass', methods =['POST'])
+def reset_pass():
+    body = request.get_json()
+    user_email = body["email"]
+    user_passw = body["password"]
+    user_token = body["token"]
+
+    user = User.find_by_email(user_email)
+
+    if user:
+        if user.token != user_token:
+            raise APIException("The token of request is not correct.", 401)
+        try:
+            hashed_password = generate_password_hash(user_passw, "sha256")
+
+            result_upadte = user.update_user(password=hashed_password, token="")
+        except:
+            raise APIException("Algo esta mal. Su contraseña no ha podido ser cambiada", 401)
+
+        return jsonify({"message" :"Su contraseña ha sido cambiada con exito."}), 201
+    else:
+        raise APIException("Este usuario no existe", 401)
+
+
+def send_email(receiver=None, message=""):
+    if receiver is not None:
+        try:
+            msg = MIMEMultipart()
+            password = os.environ.get('PASS_EMAIL')
+            msg['From'] = "ready2helpemail@gmail.com"
+            msg['To'] = receiver
+            msg['Subject'] = "Ready2Help - Reset Password"
+            # add in the message body
+            msg.attach(MIMEText(message, 'plain'))
+            #create server
+            server = smtplib.SMTP('smtp.gmail.com: 587')
+            server.starttls()
+            # Login Credentials for sending the mail
+            server.login(msg['From'], password)
+            # send the message via the server.
+            server.sendmail(msg['From'], msg['To'], msg.as_string())
+            server.quit()
+            print("Enviado con exito al correo: %s" % (msg['To']))
+        except:
+            raise APIException("Algo esta mal, su correo electronico no ha sido enviado.", 401)
+    else:
+        raise APIException("Algo esta mal, el correo no puede estar vacio.", 401)
 
 @api.route('/propiedades', methods=['POST'])
 @jwt_required()
